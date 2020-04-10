@@ -1,7 +1,6 @@
 # Query all companies websites from singapore-companies-directory.com
 
 from bs4 import BeautifulSoup
-import numpy as np
 import pandas as pd
 import re
 import requests
@@ -10,52 +9,53 @@ from time import sleep
 
 from utils import (
     assign_category,
-    correct_columns_dtype,
-    extract_designation,
-    extract_name
+    correct_columns_dtype
 )
 
 
-def clean_data(df):
-    df = df.assign(designation=extract_designation(df.contact.values.tolist()))
-    df = df.assign(poc=extract_name(df.contact.values.tolist()))
-    df.fillna('', inplace=True)
-    del df['contact']
-
-    return df
-
-
-def parse_page(page, d):
+def parse_page(page, d, e):
     soup = BeautifulSoup(page, 'html.parser')
 
     try:
-        rows = soup.find(id="table116").find_all("tr")[1:][:-1]  # [7:][:-5]
+        table = (soup.find(id="table116") or
+                 soup.find(id="table119") or
+                 soup.find(id="table24"))
+        rows = table.find_all("tr")[1:][:-1]  # [7:][:-5]
 
         for row in rows:
             # read content from page, select company name, profile and url
             cells = row.find_all("td")
             name = cells[0].get_text().replace(
                 '\r\n\t\t\t\t\t', '').strip()
-            url = cells[0].find_all("a", href=True)[0]['href'].replace(
-                '../', base_url)
             profile = " ".join(cells[1].get_text().split()).strip()
             profile = re.split(r'\t+', profile)[0]
-
-            row = [name, profile, url]
+            try:
+                url = cells[0].find_all("a", href=True)[0]['href'].replace(
+                    '../', base_url)
+                row = [name, profile, url]
+                row.extend([''] * 8)
+                d.append(row)
+            except IndexError:
+                # no url, so we'll save this and search for details later
+                row = [name, profile]
+                e.append(row)
+                print("IndexError: url not found for '{}'.".format(name))
             print('\n\n{}\n\n'.format(row))
-            row.extend([''] * 8)
-            d.append(row)
+
     except AttributeError:
         pass
 
 
-def build_url_list(sub_url):
-    pagination = list(ascii_lowercase)
-    pagination.pop(0)  # remove a, there is no 'a' in the urls
-
+def build_url_list(sub_url, build=True):
     categories_url = 'Categories/'
     sub_args = '_{}'
     end_url = '.htm'
+
+    if not build:
+        return [base_url + categories_url + sub_url + end_url]
+
+    pagination = list(ascii_lowercase)
+    pagination.pop(0)  # remove a, there is no 'a' in the urls
 
     url_list = [base_url + categories_url + sub_url + end_url]
     url_list.extend(
@@ -67,6 +67,7 @@ def build_url_list(sub_url):
 
 def fetch_companies_from_directories(directories):
     companies_data = []
+    unsearched_directory = []
     # failed_tries = 0
     # url_max_tries = 4
 
@@ -81,7 +82,7 @@ def fetch_companies_from_directories(directories):
                 #     break
                 sleep(2)
                 continue
-            parse_page(req.content, companies_data)
+            parse_page(req.content, companies_data, unsearched_directory)
             print(len(companies_data))
             sleep(2)
         except requests.exceptions.Timeout:
@@ -90,23 +91,27 @@ def fetch_companies_from_directories(directories):
         except requests.exceptions.ConnectionError:
             print('\n\nConnectionError for: {}\n\n'.format(url))
             sleep(2)
-    return companies_data
+    print(unsearched_directory)
+    return (companies_data, unsearched_directory)
 
 
 if __name__ == "__main__":
     global base_url
     base_url = 'http://singapore-companies-directory.com/'
     data_source = 'singapore-companies-directory.com'
-    sub_url_list = ['singapore_furniture_list',
-                    'singapore_furnishings_list',
-                    'singapore_furnishings']
-    category = 'Furniture'
+    sub_url_list = ['singapore_nurseries']
+    build_urls = False
+    category = 'Education'
+    subcategory = 'Nursery'
+    csv_out_filename = '../data/{}/{}.csv'.format(
+        data_source, '_'.join(sub_url_list))
+
     directories = []
 
     for sub_url in sub_url_list:
-        directories.extend(build_url_list(sub_url))
+        directories.extend(build_url_list(sub_url, build_urls))
 
-    data = fetch_companies_from_directories(directories)
+    data, data_extra = fetch_companies_from_directories(directories)
 
     df = pd.DataFrame(data, columns=[
         'name',
@@ -122,8 +127,10 @@ if __name__ == "__main__":
         'data_source'])
 
     correct_columns_dtype(df)
-    df = clean_data(df)
-    df = assign_category(df, category)
+    df = assign_category(df, category, subcategory)
 
-    df.to_csv('{}_a-z.csv'.format(
-        '_'.join([data_source] + sub_url_list), sep=';'), index=False)
+    df.to_csv(csv_out_filename, sep=';', index=False)
+    if len(data_extra):
+        df_extra = pd.DataFrame(data_extra, columns=['name', 'profile'])
+        df_extra.to_csv(csv_out_filename.replace(
+            '.csv', '_names_only.csv'), sep=';', index=False)

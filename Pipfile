@@ -14,6 +14,7 @@ google = {git = "https://github.com/abenassi/Google-Search-API"}
 python-whois = "*"
 beautifulsoup4 = "*"
 ipdb = "*"
+linkedin-scraper = "*"
 
 [requires]
 python_version = "3.5"
